@@ -1,12 +1,12 @@
 import argparse
 import os
+import sys
 
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 
-from call_function import available_functions
-from call_function import call_function
+from call_function import available_functions, call_function
 from prompts import system_prompt
 
 
@@ -30,42 +30,55 @@ def main():
 
 
 def generate_content(client, messages, verbose):
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=messages,
-        config=types.GenerateContentConfig(
-            tools=[available_functions], system_instruction=system_prompt
-        ),
-    )
-    if not response.usage_metadata:
-        raise RuntimeError("Gemini API response appears to be malformed")
 
-    if verbose:
-        print("Prompt tokens:", response.usage_metadata.prompt_token_count)
-        print("Response tokens:", response.usage_metadata.candidates_token_count)
+    for i in range(20):
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=messages,
+            config=types.GenerateContentConfig(
+                tools=[available_functions], system_instruction=system_prompt
+            ),
+        )
+        if not response.usage_metadata:
+            raise RuntimeError("Gemini API response appears to be malformed")
 
-    if not response.function_calls:
-        print("Response:")
-        print(response.text)
-        return
-
-
-    func_list = []
-
-    for function_call in response.function_calls:
-        #print(f"Calling function: {function_call.name}({function_call.args})")
-        result = call_function(function_call, verbose)
-        if not result.parts :
-            raise Exception("nono")
-        if result.parts[0].function_response is None:
-            raise Exception("nonono")
-        if result.parts[0].function_response.response is None:
-            raise Exception("STOPTHERE")
         
-        func_list.append(result.parts[0])
+        if response.candidates:
+            for candidate in response.candidates:
+                if candidate.content:  # safety check
+                    messages.append(candidate.content)
+
 
         if verbose:
-            print(f"-> {result.parts[0].function_response.response}")
+            print("Prompt tokens:", response.usage_metadata.prompt_token_count)
+            print("Response tokens:", response.usage_metadata.candidates_token_count)
+
+        if not response.function_calls:
+            print("Final Response:")
+            print(response.text)
+            return
+
+
+        function_responses = []
+        for function_call in response.function_calls:
+            result = call_function(function_call, verbose)
+            if (
+                not result.parts
+                or not result.parts[0].function_response
+                or not result.parts[0].function_response.response
+            ):
+                raise RuntimeError(f"Empty function response for {function_call.name}")
+            if verbose:
+                print(f"-> {result.parts[0].function_response.response}")
+            function_responses.append(result.parts[0])
+
+        if function_responses:
+            messages.append(
+                types.Content(role="user", parts=function_responses)
+            )
+        
+    print("Maximum number of iterations was reached and the model could not give a final response.")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
